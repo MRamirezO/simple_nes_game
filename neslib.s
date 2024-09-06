@@ -353,3 +353,19 @@ try10:
 
 	rts
 .endproc
+
+.segment "CODE"
+.proc clear_sprites
+	; place all sprites offscreen at Y=255
+	lda #255
+	ldx #0
+clear_oam:
+	sta oam,x
+	inx
+	inx
+	inx
+	inx
+	bne clear_oam
+
+	rts
+.endproc
