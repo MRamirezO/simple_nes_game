@@ -182,8 +182,8 @@ gameovertext:
 
 	bit PPU_STATUS
 	; transfer sprite OAM data using DMA
-	lda #>oam
-	sta SPRITE_DMA
+	lda #>oam ; Loads highbyte of oam RAM address to A register
+	sta SPRITE_DMA ; Stores highbyte ($XX) of oam into DMA, which transfert 256bytes to VRAM ($XX00 - $XXFF)
 
 	; transfer current palette to PPU
 	vram_set_address $3F00
