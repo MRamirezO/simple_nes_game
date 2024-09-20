@@ -41,7 +41,6 @@ time: .res 2
 lasttime: .res 1
 level: .res 1
 animate: .res 1
-enemydata: .res 10
 enemycooldown: .res 1
 temp: .res 10
 score: .res 3
@@ -69,6 +68,7 @@ oam: .res 256	; sprite OAM data
 
 .segment "BSS"
 palette: .res 32 ; current palette buffer
+enemydata: .res 100 ; enemy tracking data
 
 ;*****************************************************************
 ; IRQ Clock Interrupt Routine
@@ -90,8 +90,19 @@ default_palette:
 .byte $0F,$00,$10,$30 ; bg3 greyscale
 .byte $0F,$28,$21,$11 ; sp0 player
 .byte $0F,$26,$28,$17 ; sp1 explosion
-.byte $0F,$1B,$2B,$3B ; sp2 teal
+.byte $0F,$13,$23,$33 ; sp2 purples
 .byte $0F,$12,$22,$32 ; sp3 marine
+
+;*****************************************************************
+; Define our four different enemy types
+;*****************************************************************
+
+.segment "RODATA"
+enemy_source_data:
+.byte 008,012,004,000,002,002,012,012,003 ; large meteor
+.byte 036,037,001,001,003,003,008,007,002 ; small meteor
+.byte 016,019,001,002,003,006,008,008,003 ; smart bomb
+.byte 040,044,004,000,000,000,000,000,001 ; enemy explosion
 
 
 
@@ -457,21 +468,75 @@ mainloop:
 	stx enemycooldown
 	; now see if the is an enemy object available
 	ldy #0 ; counter
+	sty temp
 @loop:
 	lda enemydata,y
 	beq :+
-	iny ; increment counter
-	cpy #10
+	tya ; add ten to Y
+	clc
+	adc #10
+	tay
+	inc temp
+	lda temp
+	cmp #10
 	bne @loop
 	; did not find an enemy to use
 	rts
 :
-	; mark the enemy as in use
-	lda #1
+	sty temp+1 ; save y
+	; determine the type of enemy to select
+	jsr rand
+	ldy temp+1
+	and #%1111
+	cmp #$0f
+	bne @notSmartBomb
+	lda #3 ; set the enemy type as Smartbomb
+	jmp @setEnemyType
+@notSmartBomb:
+	and #%1 ; A will be zero or one
+	clc
+	adc #1 ; A will be 1 (larger meteor) or 2 (small meteor)
+	
+@setEnemyType:
+	sta enemydata,y ; mark the enemy as in use and set it's type
+
+	; get the enemy data
+	sec
+	sbc #1
+	sta temp+1 ; save as our loop counter
+	beq @skipMultiply ; skip if zero
+	lda #0
+	clc ; multiply by 9
+@loop5:
+	adc #9
+	dec temp+1
+	bne @loop5
+@skipMultiply:
+	tax
+
+	; save Y
+	tya
+	pha
+
+	iny
+	; now copy 9 bytes
+	lda #9
+	sta temp+1
+@loop4:
+	lda enemy_source_data,x
 	sta enemydata,y
+	inx
+	iny
+	dec temp+1
+	bne @loop4
+
+	; restore Y
+	pla
+	tay
+	lda enemydata,y
 
 	; calculate first sprite oam position
-	tya
+	lda temp
 	asl ; multiply by 16
 	asl
 	asl
@@ -480,8 +545,51 @@ mainloop:
 	adc #20 ; skip first five sprites
 	tax
 
+	lda enemydata+4,y
+	beq @noAdjustX
+	sty temp+1
+	jsr rand
+	ldy temp+1
+	and #%1
+	beq @noAdjustX
+	lda enemydata+4,y
+	eor #$ff ; make negative
+	clc
+	adc #$01
+	sta enemydata+4,y
+
+@noAdjustX:
+
 	; now setup the enemy sprite
-	; set the Y position (byte 0) of all four parts of the player ship
+	lda enemydata+3,y ; get the number of sprites used
+	cmp #1
+	bne @fourSprites
+
+	; only one sprite used
+	; set the Y position (byte 0) 
+	lda #0
+	sta oam,x
+	lda #$ff ; ensure none of the other sprites in the group are visible
+	sta oam+4,x
+	sta oam+8,x
+	sta oam+12,x
+	; set the index number (byte 1) of the sprite pattern
+	lda enemydata+1,y ; get starting pattern
+	sta oam+1,x
+	; set the sprite attributes (byte 2)
+	lda enemydata+9,y
+	sta oam+2,x
+	; set the X position (byte 3)
+	jsr rand
+	and #%01110000
+	clc
+	adc #48
+	sta oam+3,x
+
+	rts
+
+@fourSprites:
+	; set the Y position (byte 0)
 	lda #0
 	sta oam,x
 	sta oam+4,x
@@ -489,7 +597,7 @@ mainloop:
 	sta oam+8,x
 	sta oam+12,x
 	; set the index number (byte 1) of the sprite pattern
-	lda #8
+	lda enemydata+1,y ; get starting pattern
 	sta oam+1,x
 	clc
 	adc #1
@@ -499,12 +607,12 @@ mainloop:
 	adc #1
 	sta oam+13,x
 	; set the sprite attributes (byte 2)
-	lda #%00000010
+	lda enemydata+9,y
 	sta oam+2,x
 	sta oam+6,x
 	sta oam+10,x
 	sta oam+14,x
-	; set the X position (byte 3)  of all four parts of the player ship
+	; set the X position (byte 3)
 	jsr rand
 	and #%11110000
 	clc
@@ -519,12 +627,11 @@ mainloop:
 	rts
 .endproc
 
-
 .segment "CODE"
 
 .proc move_enemies
 
-	; setup for collision detection of bullet with meteors
+	; setup for collision detection of bullet with enemies
 	lda oam+16 ; get bullet y
 	sta cy1
 	lda oam+19 ; get bullet x
@@ -536,6 +643,7 @@ mainloop:
 
 	ldy #0
 	lda #0
+	sta temp+2 ; initialise loop counter
 @loop:
 	lda enemydata,y
 	bne :+
@@ -544,7 +652,7 @@ mainloop:
 
 	; enemy is on screen
 	; calculate first sprite oam position
-	tya
+	lda temp+2
 	asl ; multiply by 16
 	asl
 	asl
@@ -553,10 +661,67 @@ mainloop:
 	adc #20 ; skip first five sprites
 	tax
 
+	lda enemydata,y
+	cmp #3 ; is it a smart bomb
+	bne @notSmartBomb
+	lda enemydata+4,y ; get DX
+	and #%10000000
+	beq @movingRight
+	; smart bomb moving left
+	lda oam+3 ; get player X
+	cmp oam+3,x
+	bcc @notSmartBomb ; is smart bomb to the left of the player?
+	sec
+	sbc oam+3,x
+	cmp #32
+	bcc @notSmartBomb
+	lda enemydata+4,y
+	eor #$ff ; make negative
+	clc
+	adc #$01
+	sta enemydata+4,y
+	jmp @notSmartBomb
+@movingRight:
+	; smart bomb moving right
+	lda oam+3 ; get player X
+	clc
+	adc #12 ; adjust for width of player
+	cmp oam+3,x 
+	bcs @notSmartBomb ; is smart bomb to the right of the player?
+	lda oam+3,x
+	sec
+	sbc oam+3 ; get the difference between the two
+	cmp #44 ; is it within 32 pixels
+	bcc @notSmartBomb
+	lda enemydata+4,y
+	eor #$ff ; make negative
+	clc
+	adc #$01
+	sta enemydata+4,y
+
+@notSmartBomb:
+
+	; adjust the enemy X
+	lda enemydata+4,y
+	beq @noMoveX
+		clc
+		adc oam+3,x
+		sta oam+3,x
+		sta oam+11,x
+		clc
+		adc #8
+		sta oam+7,x
+		sta oam+15,x
+
+@noMoveX:
+
 	lda oam,x ; get enemy Y
 	clc
-	adc #1 ; move down screen
-	cmp #196
+	adc enemydata+5,y ; add change in Y from table
+	sta oam,x ; save the new Y position
+	clc
+	adc enemydata+8,y ; add on the enemy's height
+	cmp #204
 	bcc @nohitbottom
 	; has reached the ground
 	lda #255
@@ -580,20 +745,26 @@ mainloop:
 	jmp @skip
 
 @nohitbottom:
-	sta oam,x ; save the new Y position
+	
+
+	lda enemydata+3,y
+	cmp #1 ; does the enemy only have one pattern
+	beq :+
+	lda oam,x ; update the other sprite Y positions
 	sta oam+4,x
 	clc
 	adc #8
 	sta oam+8,x
 	sta oam+12,x
+:
 
 	lda player_dead
 	cmp #0 ; check the player is not currently dead
 	bne @notlevelwithplayer
 	lda oam,x ; get enemy Y
 	clc
-	adc #14 ; add on the enemies height
-	cmp #204 ; is the enemy level with the player
+	adc enemydata+8,y ; add on the enemies height
+	cmp #$c4 ; is the enemy level with the player
 	bcc @notlevelwithplayer
 
 	lda oam+3 ; get the players X position	
@@ -604,7 +775,7 @@ mainloop:
 
 	lda oam+3,x ; get the enemy X position
 	clc
-	adc #14 ; add on it's width
+	adc enemydata+7,y ; add on it's width
 	cmp oam+3 ; is the enemies X plus it's width smaller than the player's X position
 	bcc @notlevelwithplayer
 
@@ -635,8 +806,9 @@ mainloop:
 	sta cy2
 	lda oam+3,x ; get enemy x position
 	sta cx2
-	lda #14 ; set enemy width and height
+	lda enemydata+7,y ; set enemy width
 	sta cw2
+	lda enemydata+8,y ; set enemy height
 	sta ch2
 	jsr collision_test
 	bcc @skip
@@ -651,12 +823,17 @@ mainloop:
 	lda #0 ; clear enemy's data flag
 	sta enemydata,y
 
-	lda #2 ; add 20 points to the score
+	lda enemydata+6,y ; add enemy points to the score
 	jsr add_score
 
 @skip:
-	iny ; goto next enemy
-	cpy #10
+	tya ; goto next enemy
+	clc
+	adc #10
+	tay
+	inc temp+2
+	lda temp+2
+	cmp #10
 	beq :+
 		jmp @loop
 	:
@@ -675,7 +852,7 @@ mainloop:
 @loop:
 	sta enemydata,x
 	inx
-	cpx #10
+	cpx #100
 	bne @loop
 	lda #20 ; set initial enemy cool down
 	sta enemycooldown
