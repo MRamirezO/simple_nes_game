@@ -48,6 +48,10 @@ update: .res 1
 highscore: .res 3
 lives: .res 1
 player_dead: .res 1
+flash: .res 1
+shake: .res 1
+enemycount: .res 1
+displaylevel: .res 1
 
 ;*****************************************************************
 ; Sprite OAM Data area - copied to VRAM in NMI routine
@@ -90,7 +94,7 @@ default_palette:
 .byte $0F,$00,$10,$30 ; bg3 greyscale
 .byte $0F,$28,$21,$11 ; sp0 player
 .byte $0F,$26,$28,$17 ; sp1 explosion
-.byte $0F,$13,$23,$33 ; sp2 purples
+.byte $0F,$38,$28,$18 ; sp2 browns
 .byte $0F,$12,$22,$32 ; sp3 marine
 
 ;*****************************************************************
@@ -177,6 +181,9 @@ wait_vblank2:
 gameovertext:
 .byte " G A M E  O V E R",0
 
+leveltext:
+.byte " L E V E L  ",0
+
 .proc nmi
 	; save registers
 	pha
@@ -193,8 +200,8 @@ gameovertext:
 
 	bit PPU_STATUS
 	; transfer sprite OAM data using DMA
-	lda #>oam ; Loads highbyte of oam RAM address to A register
-	sta SPRITE_DMA ; Stores highbyte ($XX) of oam into DMA, which transfert 256bytes from RAM OAM to PPU OAM ($XX00 - $XXFF)
+	lda #>oam
+	sta SPRITE_DMA
 
 	; transfer current palette to PPU
 	vram_set_address $3F00
@@ -240,12 +247,59 @@ gameovertext:
 		and update
 		sta update
 @skipgameover:
+	lda #%00010000 ; does the level message need to be displayed?
+	bit update
+	beq @skipdisplaylevel
+		vram_set_address (NAME_TABLE_0_ADDRESS + 14 * 32 + 9)
+		assign_16i text_address, leveltext 
+		jsr write_text
+		lda level ; transform each decimal digit of the level
+		jsr dec99_to_bytes
+		stx temp
+		sta temp+1
+		lda temp
+		clc
+		adc #48
+		sta PPU_VRAM_IO 
+		lda temp+1
+		clc
+		adc #48
+		sta PPU_VRAM_IO 
+		lda #%11101111 ; reset level message update flag
+		and update
+		sta update
+@skipdisplaylevel:
+	lda #%00100000 ; does the level message need to be removed?
+	bit update
+	beq @skipremovedisplaylevel
+		vram_set_address (NAME_TABLE_0_ADDRESS + 14 * 32 + 9)
+		ldx #0
+		lda #0
+		:
+			sta PPU_VRAM_IO 
+			inx
+			cpx #18
+			bne :-
+
+		lda #%11011111 ; reset level message update flag
+		and update
+		sta update
+@skipremovedisplaylevel:
+
+	jsr animate_stars
 
 	; write current scroll and control settings
-	lda #0
+	lda shake ; shake the screen from side to side?
+	beq :+
+		dec shake
+		and #%1
+		asl a
+		asl a
+	:
 	sta PPU_VRAM_ADDRESS1
+	;lda #0 ; no vertical scrolling
 	sta PPU_VRAM_ADDRESS1
-	lda ppu_ctl0
+	lda ppu_ctl0 ; write the current screen settings
 	sta PPU_CONTROL
 	lda ppu_ctl1
 	sta PPU_MASK
@@ -282,17 +336,6 @@ paletteloop:
 	cpx #32
 	bcc paletteloop
 
- 	; draw the title screen
-	jsr display_title_screen
-
-	; set our game settings
-	lda #VBLANK_NMI|BG_0000|OBJ_1000
-   	sta ppu_ctl0
-   	lda #BG_ON|OBJ_ON
-   	sta ppu_ctl1
-
-	jsr ppu_update
-
 resetgame:
 	jsr clear_sprites
 
@@ -314,7 +357,7 @@ titleloop:
 	and #PAD_A|PAD_B|PAD_START|PAD_SELECT
 	beq titleloop
 
-    ; set our random seed based on the time counter since the splash screen was displayed
+	; set our random seed based on the time counter since the splash screen was displayed
 	lda time
 	sta SEED0
 	lda time+1
@@ -326,7 +369,7 @@ titleloop:
 	sbc time
 	sta SEED2+1
 
-    ; set up ready for a new game
+	; set up ready for a new game
 	lda #1
 	sta level
 	jsr setup_level
@@ -346,6 +389,12 @@ titleloop:
 
 	; display the player's ship
 	jsr display_player
+
+	lda #64
+	sta displaylevel
+	lda #%00010001 ; set flag so the current score and level will be displayed
+	ora update
+	sta update
 
 	jsr ppu_update
 
@@ -378,6 +427,42 @@ mainloop:
 	jsr move_player_bullet
 	jsr spawn_enemies
 	jsr move_enemies
+
+	lda displaylevel
+	beq @nodisplaylevelcountdown
+		dec displaylevel
+		bne @nodisplaylevelcountdown
+		lda #%00100000 ; signal to erase level message
+		ora update
+		sta update
+	
+
+@nodisplaylevelcountdown:
+
+	lda time
+	and #%111
+	bne @nopalettechange
+		ldx palette+1
+		lda palette+2
+		sta palette+1
+		stx palette+2
+
+@nopalettechange:
+
+	lda flash
+	beq @noflash
+		dec flash
+		lda palette
+		cmp #$0f
+		bne @noflash
+			lda #$30
+			sta palette
+			sta palette+16
+			jmp mainloop
+@noflash:
+	lda #$f
+	sta palette
+	sta palette+16
 
  	jmp mainloop
 .endproc
@@ -729,6 +814,16 @@ mainloop:
 	sta oam+4,x
 	sta oam+8,x
 	sta oam+12,x
+	
+	lda enemydata,y
+	cmp #3
+	bne @notSmartBomb2
+		lda #32
+		sta flash
+		sta shake
+
+@notSmartBomb2:
+
 	lda #0 ; clear the enemies in use flag
 	sta enemydata,y
 
@@ -745,7 +840,6 @@ mainloop:
 	jmp @skip
 
 @nohitbottom:
-	
 
 	lda enemydata+3,y
 	cmp #1 ; does the enemy only have one pattern
@@ -757,6 +851,49 @@ mainloop:
 	sta oam+8,x
 	sta oam+12,x
 :
+
+
+	lda time
+	and #%11 ; only animate every four frames
+	bne @noanimate
+		; does the enemy have more than one pattern?
+		lda enemydata+1,y ; get starting pattern
+		cmp enemydata+2,y
+		beq @noanimate
+			lda enemydata+3,y
+			cmp #1 ; does the enemy only have one sprite
+			beq @singleSprite
+				lda oam+1,x ; get the 1st sprite pattern number
+				clc
+				adc #4 ; go to the next pattern
+				cmp enemydata+2,y
+				beq :+
+				bcc :+
+					lda enemydata+1,y ; past the end pattern, get the starting pattern
+				:
+				sta oam+1,x
+				clc
+				adc #1
+				sta oam+5,x ; update the other patterns
+				clc
+				adc #1
+				sta oam+9,x
+				clc
+				adc #1
+				sta oam+13,x
+				jmp @noanimate
+			@singleSprite:
+				lda oam+1,x ; get the 1st sprite pattern number
+				clc
+				adc #1 ; go to the next pattern
+				cmp enemydata+2,y
+				beq :+
+				bcc :+
+					lda enemydata+1,y ; past the end pattern, get the starting pattern
+				:
+				sta oam+1,x
+
+@noanimate:
 
 	lda player_dead
 	cmp #0 ; check the player is not currently dead
@@ -838,6 +975,105 @@ mainloop:
 		jmp @loop
 	:
 
+	rts
+.endproc
+
+;*****************************************************************
+; Randomly display star characters
+;*****************************************************************
+
+.segment "ZEROPAGE"
+
+starlocations:	.res 10*2 ; two bytes per star
+
+.segment "CODE"
+
+.proc place_stars
+	lda #0 ; clear star locations
+	ldx #0
+@loop:
+	sta starlocations,x
+	inx
+	cpx #20
+	bne @loop
+
+	ldx #0
+@loop2:
+	jsr rand
+	pha ; save A
+	and #%1111 ; get lower nibble
+	clc
+	adc #1 ; skip zero
+	sta temp ; this is the row of our star
+	pla ; get A back
+	lsr ; move upper nibble into the lower nibble + multiple by 2
+	lsr
+	lsr
+	sta temp+1 ; this is the column of our star
+
+	assign_16i paddr, NAME_TABLE_0_ADDRESS+64 ; start from the 2nd row
+@loop3:
+	add_16_8 paddr, #32 ; add 32 for each row
+	dec temp
+	bne @loop3
+
+	add_16_8 paddr, temp+1 ; add the column
+
+	vram_set_address_i paddr
+	lda #12 ; output star pattern
+	sta PPU_VRAM_IO
+
+	lda paddr ; save our address for later
+	sta starlocations,x
+	lda paddr+1
+	sta starlocations+1,x
+
+	inx
+	inx
+	cpx #20
+	beq :+
+		jmp @loop2
+	:
+
+	rts
+.endproc
+
+;*****************************************************************
+; Randomly animate stars by changing their pattern
+;*****************************************************************
+
+.segment "CODE"
+
+.proc animate_stars
+	lda time
+	and #%11
+	beq :+
+		rts ; any change every four ticks
+	:
+	
+	ldx #0
+	lda starlocations,x
+	bne @loop
+		rts ; skip processing if there are no stars
+@loop:
+    lda PPU_STATUS
+	lda starlocations+1,x
+   	sta PPU_VRAM_ADDRESS2
+	lda starlocations,x
+   	sta PPU_VRAM_ADDRESS2
+
+	lda time
+	lsr
+	lsr
+	and #%1 ; use the 3rd bit of time to control our pattern
+	clc
+	adc #12
+	sta PPU_VRAM_IO
+
+	inx
+	inx
+	cpx #20
+	bne @loop
 	rts
 .endproc
 
@@ -1274,13 +1510,8 @@ made_attributes:
 	jsr clear_nametable ; Clear the 1st name table
 
 	; Write our title text
-	vram_set_address (NAME_TABLE_0_ADDRESS + 4 * 32 + 6) ; point where to write data in vram
-	assign_16i text_address, title_text ; gets 16 bits address of title_text and assings it to text_address
-	jsr write_text ; gets data from text_address and writes it into vram
-
-    ; Write made by text
-	vram_set_address (NAME_TABLE_0_ADDRESS + 8 * 32 + 8)
-	assign_16i text_address, made_by_text
+	vram_set_address (NAME_TABLE_0_ADDRESS + 4 * 32 + 6)
+	assign_16i text_address, title_text
 	jsr write_text
 
 	; Write our press play text
@@ -1299,23 +1530,18 @@ loop:
 	cpy #8
 	bne loop
 
-; Set the madeby text to use the 3nd palette entries
-	vram_set_address (ATTRIBUTE_TABLE_0_ADDRESS + 16)
-	assign_16i paddr, made_attributes
-	ldy #0
-    
-loop2:
-	lda (paddr),y
-	sta PPU_VRAM_IO
-	iny
-	cpy #8
-	bne loop2
+	lda #0 ; clear star locations
+	ldx #0
+@loop:
+	sta starlocations,x
+	inx
+	cpx #20
+	bne @loop
 
 	jsr ppu_update ; Wait until the screen has been drawn
 
 	rts
 .endproc
-
 
 ;*****************************************************************
 ; Display Main Game Screen
@@ -1367,6 +1593,7 @@ loop3:
 	bne loop3
 
 	jsr display_lives
+	jsr place_stars
 	jsr ppu_update ; Wait until the screen has been drawn
 	rts
 .endproc
