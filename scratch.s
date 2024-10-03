@@ -67,6 +67,40 @@ oam: .res 256	; sprite OAM data
 .include "neslib.s"
 
 ;*****************************************************************
+; Include Sound Engine and Sound Effects Data
+;*****************************************************************
+
+.segment "CODE"
+
+; FamiStudio config.
+FAMISTUDIO_CFG_EXTERNAL       = 1
+FAMISTUDIO_CFG_DPCM_SUPPORT   = 1
+FAMISTUDIO_CFG_SFX_SUPPORT    = 1 
+FAMISTUDIO_CFG_SFX_STREAMS    = 2
+FAMISTUDIO_CFG_EQUALIZER      = 1
+FAMISTUDIO_USE_VOLUME_TRACK   = 1
+FAMISTUDIO_USE_PITCH_TRACK    = 1
+FAMISTUDIO_USE_SLIDE_NOTES    = 1
+FAMISTUDIO_USE_VIBRATO        = 1
+FAMISTUDIO_USE_ARPEGGIO       = 1
+FAMISTUDIO_CFG_SMOOTH_VIBRATO = 1
+FAMISTUDIO_USE_RELEASE_NOTES  = 1
+FAMISTUDIO_DPCM_OFF           = $e000
+
+; CA65-specifc config.
+.define FAMISTUDIO_CA65_ZP_SEGMENT   ZEROPAGE
+.define FAMISTUDIO_CA65_RAM_SEGMENT  BSS
+.define FAMISTUDIO_CA65_CODE_SEGMENT CODE
+
+.include "famistudio_ca65.s"
+
+.include "scratch-sfx.s"
+
+.segment "ZEROPAGE"
+
+sfx_channel: .res 1 ; sound effects channel to use
+
+;*****************************************************************
 ; Remainder of normal RAM area
 ;*****************************************************************
 
@@ -304,6 +338,9 @@ leveltext:
 	lda ppu_ctl1
 	sta PPU_MASK
 
+	; call famistudio play routine
+	jsr famistudio_update
+
 	; flag PPU update complete
 	ldx #0
 	stx nmi_ready
@@ -326,6 +363,15 @@ leveltext:
  	; main application - rendering is currently off
 	lda #1 ; set initial high score to 1000
 	sta highscore+1
+
+	lda #1 ; NTSC 
+	ldx #0 
+	ldy #0 
+	jsr famistudio_init
+
+	ldx #.lobyte(sounds) ; set address of sound effects
+	ldy #.hibyte(sounds)
+	jsr famistudio_sfx_init
 
  	; initialize palette table
  	ldx #0
@@ -465,6 +511,31 @@ mainloop:
 	sta palette+16
 
  	jmp mainloop
+.endproc
+
+;*********************************************************
+; Play a sound effect
+; a = sound effect to play
+; sfx_channel = sound effects channel to use
+;*********************************************************/
+.segment "CODE"
+
+.proc play_sfx
+   sta temp+9 ; save sound effect number
+   tya ; save current register values
+   pha
+   txa
+   pha
+
+   lda temp+9 ; get the sound effect number
+   ldx sfx_channel ; choose the channel to play the sound effect on
+   jsr famistudio_sfx_play
+
+   pla ; restore register values
+   tax
+   pla
+   tay
+   rts
 .endproc
 
 .segment "CODE"
@@ -822,6 +893,11 @@ mainloop:
 		sta flash
 		sta shake
 
+		lda #FAMISTUDIO_SFX_CH1
+		sta sfx_channel
+		lda #2 ; play big boom sound effect
+		jsr play_sfx
+
 @notSmartBomb2:
 
 	lda #0 ; clear the enemies in use flag
@@ -921,6 +997,11 @@ mainloop:
 	ora update
 	sta update
 
+	lda #FAMISTUDIO_SFX_CH1
+	sta sfx_channel
+	lda #2 ; play big boom sound effect
+	jsr play_sfx
+
 	lda #1 ; mark the player as currently dead
 	sta player_dead
 
@@ -962,6 +1043,11 @@ mainloop:
 
 	lda enemydata+6,y ; add enemy points to the score
 	jsr add_score
+
+	lda #FAMISTUDIO_SFX_CH1
+	sta sfx_channel
+	lda #1 ; play boom sound effect
+	jsr play_sfx
 
 @skip:
 	tya ; goto next enemy
@@ -1447,6 +1533,11 @@ not_gamepad_right:
 			clc
 			adc #6 ; centre bullet on player
 			sta oam + 19 ; set bullet X position
+
+			lda #FAMISTUDIO_SFX_CH0
+			sta sfx_channel
+			lda #0 ; play zap sound effect
+			jsr play_sfx
 
 not_gamepad_a:	
 
